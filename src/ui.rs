@@ -40,29 +40,24 @@ pub(super) fn draw_picker_ui(f: &mut Frame, app: &PickerApp) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
             Constraint::Min(10),
-            Constraint::Length(5),
+            Constraint::Length(3),
         ])
         .split(f.area());
 
-    let title = if app.loading {
-        format!("pale run picker | loading recent runs in background... (q to quit)")
-    } else {
-        format!("pale run picker | a=set A | b=set B | enter=compare | q=quit")
-    };
-
-    let head = Paragraph::new(title).block(Block::default().borders(Borders::ALL).title("Picker"));
-    f.render_widget(head, chunks[0]);
-
-    if app.loading && app.runs.is_empty() {
+    if app.loading {
         let mut spin = app.throbber.clone();
-        draw_loading_centered(f, chunks[1], "Loading runs", &mut spin);
+        draw_loading_centered(
+            f,
+            chunks[0],
+            &format!("Loading runs page {}", app.pending_page),
+            &mut spin,
+        );
     } else if let Some(err) = &app.error {
         let p = Paragraph::new(err.clone())
             .block(Block::default().borders(Borders::ALL).title("Fetch error"))
             .wrap(Wrap { trim: true });
-        f.render_widget(p, chunks[1]);
+        f.render_widget(p, chunks[0]);
     } else {
         let header = Row::new(vec!["sel", "id", "name", "status", "model", "updated"])
             .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
@@ -108,25 +103,19 @@ pub(super) fn draw_picker_ui(f: &mut Frame, app: &PickerApp) {
             ],
         )
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title("Recent runs"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("Runs (page {})", app.page)),
+        )
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
-        f.render_stateful_widget(table, chunks[1], &mut state);
+        f.render_stateful_widget(table, chunks[0], &mut state);
     }
 
-    let foot = Paragraph::new(format!(
-        "A: {} | B: {}",
-        app.selected_a
-            .and_then(|i| app.runs.get(i))
-            .map(|r| r.id.as_str())
-            .unwrap_or("-"),
-        app.selected_b
-            .and_then(|i| app.runs.get(i))
-            .map(|r| r.id.as_str())
-            .unwrap_or("-")
-    ))
-    .block(Block::default().borders(Borders::ALL).title("Selected"));
-    f.render_widget(foot, chunks[2]);
+    let foot = Paragraph::new("[/]/←→ page | a/b mark | enter compare | q quit")
+        .block(Block::default().borders(Borders::ALL).title("Keys"));
+    f.render_widget(foot, chunks[1]);
 }
 
 
@@ -136,21 +125,16 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Length(3),
-            Constraint::Min(10),
+            Constraint::Min(8),
+            Constraint::Length(3),
         ])
         .split(f.area());
 
-    let dist_step = app
-        .dist_steps
-        .get(app.current_dist_index)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "latest".to_string());
+    let left_id = app.left.run_id.as_deref().unwrap_or("-");
+    let right_id = app.right.run_id.as_deref().unwrap_or("-");
     let title = Paragraph::new(format!(
-        "pale | {} vs {} | tab:{} | dist-step:{} | q quit",
-        app.left.label,
-        app.right.label,
-        app.active_tab.title(),
-        dist_step
+        "A: {} | B: {}",
+        left_id, right_id
     ))
     .block(Block::default().borders(Borders::ALL).title("Session"));
     f.render_widget(title, chunks[0]);
@@ -162,6 +146,10 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         Tab::Distributions => draw_distributions_tab(f, app, chunks[2]),
         Tab::Health => draw_health_tab(f, app, chunks[2]),
     }
+
+    let nav = Paragraph::new("q quit | b picker | 1/2/3 tabs | ←/→ tabs | j/k rows | h/l dist-step")
+        .block(Block::default().borders(Borders::ALL).title("Keys"));
+    f.render_widget(nav, chunks[3]);
 }
 
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
@@ -186,8 +174,6 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
             style,
         ));
     }
-
-    spans.push(Span::raw("  (←/→ tabs, j/k rows, h/l dist-step in Distributions)"));
 
     let line = Line::from(spans);
     let widget = Paragraph::new(line).block(Block::default().borders(Borders::ALL).title("Tabs"));

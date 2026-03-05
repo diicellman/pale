@@ -307,51 +307,90 @@ struct PickerApp {
     selected: usize,
     selected_a: Option<usize>,
     selected_b: Option<usize>,
+    page: usize,
+    pending_page: usize,
+    per_page: usize,
     loading: bool,
     error: Option<String>,
     throbber: ThrobberState,
 }
 
-fn run_picker_mode(prefetch_runs: usize) -> Result<()> {
-    let (tx, rx) = mpsc::channel::<Result<Vec<RunListItem>, String>>();
-    thread::spawn(move || {
-        let result = fetch_recent_runs(prefetch_runs).map_err(|e| e.to_string());
-        let _ = tx.send(result);
-    });
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppLoopAction {
+    Quit,
+    BackToPicker,
+}
 
+#[derive(Debug, Clone)]
+struct PickerFetchResult {
+    page: usize,
+    runs: Vec<RunListItem>,
+}
+
+fn run_picker_mode(prefetch_runs: usize) -> Result<()> {
     enable_raw_mode().context("failed to enable raw mode")?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen).context("failed to enter alternate screen")?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("failed to create terminal")?;
 
+    let res = run_picker_session(&mut terminal, prefetch_runs);
+
+    disable_raw_mode().ok();
+    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
+    terminal.show_cursor().ok();
+
+    res
+}
+
+fn run_picker_session(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    prefetch_runs: usize,
+) -> Result<()> {
     let mut app = PickerApp {
         runs: Vec::new(),
         selected: 0,
         selected_a: None,
         selected_b: None,
+        page: 1,
+        pending_page: 1,
+        per_page: prefetch_runs.max(1),
         loading: true,
         error: None,
         throbber: ThrobberState::default(),
     };
 
-    let res: Result<()> = loop {
+    let mut rx = start_picker_fetch(app.pending_page, app.per_page);
+
+    loop {
         if app.loading {
             app.throbber.calc_next();
             match rx.try_recv() {
-                Ok(Ok(runs)) => {
-                    app.runs = runs;
+                Ok(Ok(payload)) => {
                     app.loading = false;
-                    app.selected = 0;
+                    app.error = None;
+                    if payload.runs.is_empty() && payload.page > 1 {
+                        app.pending_page = app.page;
+                        app.error = Some("No runs on that page.".to_string());
+                    } else {
+                        app.runs = payload.runs;
+                        app.page = payload.page;
+                        app.pending_page = payload.page;
+                        app.selected = 0;
+                        app.selected_a = None;
+                        app.selected_b = None;
+                    }
                 }
                 Ok(Err(err)) => {
                     app.error = Some(err);
                     app.loading = false;
+                    app.pending_page = app.page;
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
                     app.error = Some("background fetch channel disconnected".to_string());
                     app.loading = false;
+                    app.pending_page = app.page;
                 }
             }
         }
@@ -361,58 +400,79 @@ fn run_picker_mode(prefetch_runs: usize) -> Result<()> {
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
-                    KeyCode::Char('q') => break Ok(()),
+                    KeyCode::Char('q') => return Ok(()),
                     KeyCode::Down | KeyCode::Char('j') => {
-                        if !app.runs.is_empty() {
+                        if !app.loading && !app.runs.is_empty() {
                             app.selected = (app.selected + 1).min(app.runs.len() - 1);
                         }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        if !app.runs.is_empty() {
+                        if !app.loading && !app.runs.is_empty() {
                             app.selected = app.selected.saturating_sub(1);
                         }
                     }
                     KeyCode::Char('a') => {
-                        if !app.runs.is_empty() {
+                        if !app.loading && !app.runs.is_empty() {
                             app.selected_a = Some(app.selected);
                         }
                     }
                     KeyCode::Char('b') => {
-                        if !app.runs.is_empty() {
+                        if !app.loading && !app.runs.is_empty() {
                             app.selected_b = Some(app.selected);
                         }
                     }
+                    KeyCode::Right | KeyCode::Char(']') => {
+                        if !app.loading {
+                            app.pending_page = app.page + 1;
+                            app.loading = true;
+                            app.error = None;
+                            rx = start_picker_fetch(app.pending_page, app.per_page);
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Char('[') => {
+                        if !app.loading && app.page > 1 {
+                            app.pending_page = app.page - 1;
+                            app.loading = true;
+                            app.error = None;
+                            rx = start_picker_fetch(app.pending_page, app.per_page);
+                        }
+                    }
                     KeyCode::Enter => {
+                        if app.loading {
+                            continue;
+                        }
                         if let (Some(a_idx), Some(b_idx)) = (app.selected_a, app.selected_b) {
-                            if a_idx != b_idx {
-                                let run_a = app.runs[a_idx].id.clone();
-                                let run_b = app.runs[b_idx].id.clone();
-                                let args = CompareArgs {
-                                    run_a: Some(run_a),
-                                    run_b: Some(run_b),
-                                    metrics_a: None,
-                                    metrics_b: None,
-                                    label_a: None,
-                                    label_b: None,
-                                    window: 50,
-                                    thresholds: Vec::new(),
-                                    dist_step: None,
-                                    log_tail: 2000,
-                                    skip_extras: false,
-                                };
+                            if a_idx == b_idx {
+                                continue;
+                            }
 
-                                match load_compare_app_with_spinner(
-                                    &mut terminal,
-                                    "Loading compare view...",
-                                    args,
-                                ) {
-                                    Ok(mut compare_app) => {
-                                        run_app(&mut terminal, &mut compare_app)?;
-                                        break Ok(());
-                                    }
-                                    Err(err) => {
-                                        app.error = Some(format!("failed to build compare view: {err}"));
-                                    }
+                            let run_a = app.runs[a_idx].id.clone();
+                            let run_b = app.runs[b_idx].id.clone();
+                            let args = CompareArgs {
+                                run_a: Some(run_a),
+                                run_b: Some(run_b),
+                                metrics_a: None,
+                                metrics_b: None,
+                                label_a: None,
+                                label_b: None,
+                                window: 50,
+                                thresholds: Vec::new(),
+                                dist_step: None,
+                                log_tail: 2000,
+                                skip_extras: false,
+                            };
+
+                            match load_compare_app_with_spinner(
+                                terminal,
+                                "Loading compare view...",
+                                args,
+                            ) {
+                                Ok(mut compare_app) => match run_app(terminal, &mut compare_app)? {
+                                    AppLoopAction::Quit => return Ok(()),
+                                    AppLoopAction::BackToPicker => {}
+                                },
+                                Err(err) => {
+                                    app.error = Some(format!("failed to build compare view: {err}"));
                                 }
                             }
                         }
@@ -421,13 +481,18 @@ fn run_picker_mode(prefetch_runs: usize) -> Result<()> {
                 }
             }
         }
-    };
+    }
+}
 
-    disable_raw_mode().ok();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
-    terminal.show_cursor().ok();
-
-    res
+fn start_picker_fetch(page: usize, per_page: usize) -> mpsc::Receiver<Result<PickerFetchResult, String>> {
+    let (tx, rx) = mpsc::channel::<Result<PickerFetchResult, String>>();
+    thread::spawn(move || {
+        let result = fetch_runs_page(per_page, page)
+            .map(|runs| PickerFetchResult { page, runs })
+            .map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+    rx
 }
 
 fn load_compare_app_with_spinner(
@@ -460,9 +525,19 @@ fn load_compare_app_with_spinner(
 }
 
 
-fn fetch_recent_runs(limit: usize) -> Result<Vec<RunListItem>> {
+fn fetch_runs_page(limit: usize, page: usize) -> Result<Vec<RunListItem>> {
     let limit_s = limit.to_string();
-    let root = run_prime_json(&["rl", "list", "-o", "json", "-n", limit_s.as_str()])?;
+    let page_s = page.to_string();
+    let root = run_prime_json(&[
+        "rl",
+        "list",
+        "-o",
+        "json",
+        "-n",
+        limit_s.as_str(),
+        "-p",
+        page_s.as_str(),
+    ])?;
     let runs = root
         .get("runs")
         .and_then(Value::as_array)
@@ -512,7 +587,10 @@ fn run_compare(args: CompareArgs) -> Result<()> {
 
     let res = (|| -> Result<()> {
         let mut app = load_compare_app_with_spinner(&mut terminal, "Loading compare view...", args)?;
-        run_app(&mut terminal, &mut app)
+        match run_app(&mut terminal, &mut app)? {
+            AppLoopAction::Quit => Ok(()),
+            AppLoopAction::BackToPicker => run_picker_session(&mut terminal, 30),
+        }
     })();
 
     disable_raw_mode().ok();
@@ -2112,7 +2190,10 @@ fn to_chart_points(points: &[MetricPoint]) -> Vec<(f64, f64)> {
         .collect::<Vec<_>>()
 }
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App) -> Result<()> {
+fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+) -> Result<AppLoopAction> {
     loop {
         poll_distribution_fetch(app);
         if app.dist_loading {
@@ -2124,7 +2205,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut
         if event::poll(Duration::from_millis(150))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
-                    KeyCode::Char('q') => break,
+                    KeyCode::Char('q') => return Ok(AppLoopAction::Quit),
+                    KeyCode::Char('b') => return Ok(AppLoopAction::BackToPicker),
                     KeyCode::Char('1') => app.active_tab = Tab::Summary,
                     KeyCode::Char('2') => app.active_tab = Tab::Distributions,
                     KeyCode::Char('3') => app.active_tab = Tab::Health,
@@ -2148,7 +2230,6 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut
         }
     }
 
-    Ok(())
 }
 
 fn shift_distribution_step(app: &mut App, delta: isize) {
