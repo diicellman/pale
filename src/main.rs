@@ -407,7 +407,8 @@ fn run_picker_mode(prefetch_runs: usize) -> Result<()> {
                                         break Ok(());
                                     }
                                     Err(err) => {
-                                        app.error = Some(format!("failed to build compare view: {err}"));
+                                        app.error =
+                                            Some(format!("failed to build compare view: {err}"));
                                     }
                                 }
                             }
@@ -484,7 +485,11 @@ fn draw_loading_centered(
         .label(label)
         .throbber_set(BRAILLE_SIX)
         .use_type(WhichUse::Spin)
-        .throbber_style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
+        .throbber_style(
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        );
     let line = throbber.to_line(throbber_state);
     let p = Paragraph::new(line).alignment(Alignment::Center);
     f.render_widget(p, inner[1]);
@@ -560,8 +565,11 @@ fn draw_picker_ui(f: &mut Frame, app: &PickerApp) {
             .wrap(Wrap { trim: true });
         f.render_widget(p, chunks[1]);
     } else {
-        let header = Row::new(vec!["sel", "id", "name", "status", "model", "updated"])
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        let header = Row::new(vec!["sel", "id", "name", "status", "model", "updated"]).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
 
         let rows = app
             .runs
@@ -633,7 +641,8 @@ fn run_compare(args: CompareArgs) -> Result<()> {
     let mut terminal = Terminal::new(backend).context("failed to create terminal")?;
 
     let res = (|| -> Result<()> {
-        let mut app = load_compare_app_with_spinner(&mut terminal, "Loading compare view...", args)?;
+        let mut app =
+            load_compare_app_with_spinner(&mut terminal, "Loading compare view...", args)?;
         run_app(&mut terminal, &mut app)
     })();
 
@@ -699,12 +708,10 @@ fn build_compare_app(args: CompareArgs) -> Result<App> {
     let dist_step = args.dist_step;
     let skip_extras = args.skip_extras;
 
-    let extras_left_handle = thread::spawn(move || {
-        collect_side_extras(&left_clone, log_tail, dist_step, skip_extras)
-    });
-    let extras_right_handle = thread::spawn(move || {
-        collect_side_extras(&right_clone, log_tail, dist_step, skip_extras)
-    });
+    let extras_left_handle =
+        thread::spawn(move || collect_side_extras(&left_clone, log_tail, dist_step, skip_extras));
+    let extras_right_handle =
+        thread::spawn(move || collect_side_extras(&right_clone, log_tail, dist_step, skip_extras));
 
     let extras_left = extras_left_handle
         .join()
@@ -765,7 +772,11 @@ fn build_compare_app(args: CompareArgs) -> Result<App> {
         .rows
         .iter()
         .find(|r| r.metric == "distribution_step")
-        .and_then(|r| r.a.parse::<usize>().ok().or_else(|| r.b.parse::<usize>().ok()))
+        .and_then(|r| {
+            r.a.parse::<usize>()
+                .ok()
+                .or_else(|| r.b.parse::<usize>().ok())
+        })
     {
         if let Some(idx) = app.dist_steps.iter().position(|s| *s as usize == step) {
             app.current_dist_index = idx;
@@ -1033,7 +1044,11 @@ fn parse_distribution_steps(root: &Value) -> Vec<i64> {
 
 fn merge_distribution_steps(a: &[i64], b: &[i64]) -> Vec<i64> {
     if !a.is_empty() && !b.is_empty() {
-        let mut out = a.iter().copied().filter(|x| b.contains(x)).collect::<Vec<_>>();
+        let mut out = a
+            .iter()
+            .copied()
+            .filter(|x| b.contains(x))
+            .collect::<Vec<_>>();
         out.sort_unstable();
         out.dedup();
         if !out.is_empty() {
@@ -1203,13 +1218,9 @@ fn compare_runs(a: &RunData, b: &RunData, thresholds: &[f64]) -> Comparison {
     let sb = &b.summary;
 
     let mut rows = vec![
-        metric_row(
-            "steps",
-            sa.steps as f64,
-            sb.steps as f64,
-            false,
-            |v| format!("{}", v as usize),
-        ),
+        metric_row("steps", sa.steps as f64, sb.steps as f64, false, |v| {
+            format!("{}", v as usize)
+        }),
         metric_row(
             "final_reward",
             sa.final_reward,
@@ -1217,13 +1228,9 @@ fn compare_runs(a: &RunData, b: &RunData, thresholds: &[f64]) -> Comparison {
             true,
             |v| format!("{v:.4}"),
         ),
-        metric_row(
-            "best_reward",
-            sa.best_reward,
-            sb.best_reward,
-            true,
-            |v| format!("{v:.4}"),
-        ),
+        metric_row("best_reward", sa.best_reward, sb.best_reward, true, |v| {
+            format!("{v:.4}")
+        }),
         metric_row(
             "best_step (lower better)",
             sa.best_step as f64,
@@ -1231,20 +1238,12 @@ fn compare_runs(a: &RunData, b: &RunData, thresholds: &[f64]) -> Comparison {
             false,
             |v| format!("{}", v as i64),
         ),
-        metric_row(
-            "auc_reward",
-            sa.auc_reward,
-            sb.auc_reward,
-            true,
-            |v| format!("{v:.2}"),
-        ),
-        metric_row(
-            "last_window_mean",
-            sa.last_mean,
-            sb.last_mean,
-            true,
-            |v| format!("{v:.4}"),
-        ),
+        metric_row("auc_reward", sa.auc_reward, sb.auc_reward, true, |v| {
+            format!("{v:.2}")
+        }),
+        metric_row("last_window_mean", sa.last_mean, sb.last_mean, true, |v| {
+            format!("{v:.4}")
+        }),
         metric_row(
             "last_window_std (lower better)",
             sa.last_std,
@@ -1361,9 +1360,7 @@ fn compare_runs(a: &RunData, b: &RunData, thresholds: &[f64]) -> Comparison {
     }
 
     if sb.late.slope.abs() < 1e-4 {
-        findings.push(
-            "Run B appears plateaued in the late segment (slope near zero).".to_string(),
-        );
+        findings.push("Run B appears plateaued in the late segment (slope near zero).".to_string());
     }
 
     if findings.is_empty() {
@@ -1376,7 +1373,10 @@ fn compare_runs(a: &RunData, b: &RunData, thresholds: &[f64]) -> Comparison {
     Comparison { rows, findings }
 }
 
-fn build_distribution_comparison(a: &DistributionBundle, b: &DistributionBundle) -> DistributionComparison {
+fn build_distribution_comparison(
+    a: &DistributionBundle,
+    b: &DistributionBundle,
+) -> DistributionComparison {
     let mut rows = Vec::new();
     rows.push(optional_metric_row(
         "distribution_step",
@@ -1497,7 +1497,9 @@ fn build_distribution_comparison(a: &DistributionBundle, b: &DistributionBundle)
                 "Reward distribution drift is high (JS={js:.4}); policy behavior likely shifted meaningfully."
             ));
         } else {
-            findings.push(format!("Reward distribution drift is moderate/low (JS={js:.4})."));
+            findings.push(format!(
+                "Reward distribution drift is moderate/low (JS={js:.4})."
+            ));
         }
     } else {
         findings.push("Reward distribution unavailable for one or both runs.".to_string());
@@ -1602,7 +1604,8 @@ fn build_health_comparison(a: &HealthData, b: &HealthData) -> HealthComparison {
     let mut findings = Vec::new();
 
     if let (Some(al), Some(bl)) = (&a.log, &b.log) {
-        let err_delta = per_1k(bl.errors as f64, bl.lines as f64) - per_1k(al.errors as f64, al.lines as f64);
+        let err_delta =
+            per_1k(bl.errors as f64, bl.lines as f64) - per_1k(al.errors as f64, al.lines as f64);
         if err_delta.abs() >= 0.5 {
             findings.push(format!(
                 "Error density changed by {:+.2} per 1k log lines.",
@@ -1900,15 +1903,7 @@ fn parse_bins_array(arr: &[Value]) -> Option<Vec<HistogramBin>> {
 
         let count = get_obj_f64(
             obj,
-            &[
-                "count",
-                "n",
-                "freq",
-                "frequency",
-                "value",
-                "y",
-                "mass",
-            ],
+            &["count", "n", "freq", "frequency", "value", "y", "mass"],
         )?;
 
         let (l, u) = if upper >= lower {
@@ -1926,11 +1921,7 @@ fn parse_bins_array(arr: &[Value]) -> Option<Vec<HistogramBin>> {
         }
     }
 
-    if bins.len() < 2 {
-        None
-    } else {
-        Some(bins)
-    }
+    if bins.len() < 2 { None } else { Some(bins) }
 }
 
 fn parse_bin_range(s: &str) -> Option<(f64, f64)> {
@@ -2234,7 +2225,10 @@ fn to_chart_points(points: &[MetricPoint]) -> Vec<(f64, f64)> {
         .collect::<Vec<_>>()
 }
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App) -> Result<()> {
+fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+) -> Result<()> {
     loop {
         poll_distribution_fetch(app);
         if app.dist_loading {
@@ -2291,7 +2285,8 @@ fn shift_distribution_step(app: &mut App, delta: isize) {
 }
 
 fn start_distribution_step_fetch(app: &mut App, step: i64) {
-    let (Some(left_id), Some(right_id)) = (app.left.run_id.clone(), app.right.run_id.clone()) else {
+    let (Some(left_id), Some(right_id)) = (app.left.run_id.clone(), app.right.run_id.clone())
+    else {
         return;
     };
 
@@ -2346,7 +2341,8 @@ fn poll_distribution_fetch(app: &mut App) {
 
     match rx.try_recv() {
         Ok(Ok(payload)) => {
-            app.distribution_comparison = build_distribution_comparison(&payload.left, &payload.right);
+            app.distribution_comparison =
+                build_distribution_comparison(&payload.left, &payload.right);
             app.dist_loading = false;
             app.dist_error = None;
             app.dist_rx = None;
@@ -2451,7 +2447,9 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    spans.push(Span::raw("  (←/→ tabs, j/k rows, h/l dist-step in Distributions)"));
+    spans.push(Span::raw(
+        "  (←/→ tabs, j/k rows, h/l dist-step in Distributions)",
+    ));
 
     let line = Line::from(spans);
     let widget = Paragraph::new(line).block(Block::default().borders(Borders::ALL).title("Tabs"));
@@ -2504,12 +2502,29 @@ fn draw_summary_tab(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_distributions_tab(f: &mut Frame, app: &mut App, area: Rect) {
+    let min_middle = 10u16;
+    let mut top_h = ((area.height as f32) * 0.24).round() as u16;
+    let mut bottom_h = ((area.height as f32) * 0.18).round() as u16;
+    top_h = top_h.clamp(5, 12);
+    bottom_h = bottom_h.clamp(3, 7);
+
+    if top_h + bottom_h + min_middle > area.height {
+        let mut overflow = top_h + bottom_h + min_middle - area.height;
+
+        let cut_bottom = overflow.min(bottom_h.saturating_sub(3));
+        bottom_h = bottom_h.saturating_sub(cut_bottom);
+        overflow = overflow.saturating_sub(cut_bottom);
+
+        let cut_top = overflow.min(top_h.saturating_sub(5));
+        top_h = top_h.saturating_sub(cut_top);
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(12),
-            Constraint::Min(10),
-            Constraint::Length(7),
+            Constraint::Length(top_h),
+            Constraint::Min(min_middle),
+            Constraint::Length(bottom_h),
         ])
         .split(area);
 
@@ -2578,7 +2593,11 @@ fn draw_distributions_tab(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let findings = Paragraph::new(findings_text)
-        .block(Block::default().borders(Borders::ALL).title("Distribution findings"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Distribution findings"),
+        )
         .wrap(Wrap { trim: true });
     f.render_widget(findings, chunks[2]);
 }
@@ -2606,10 +2625,60 @@ fn draw_distribution_bars(
 
     let max_count = bins.iter().map(|(_, c)| *c).max().unwrap_or(1).max(1);
     let max_rows = inner.height as usize;
+
+    let col_count = if bins.len() > max_rows && inner.width >= 36 {
+        2usize
+    } else {
+        1usize
+    };
+
+    let columns = if col_count == 2 {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(100)])
+            .split(inner)
+    };
+
+    let per_col = bins.len().div_ceil(col_count);
+    for (idx, col_area) in columns.iter().enumerate() {
+        let start = idx * per_col;
+        if start >= bins.len() {
+            continue;
+        }
+        let end = (start + per_col).min(bins.len());
+        render_distribution_lines(
+            f,
+            *col_area,
+            &bins[start..end],
+            max_count,
+            color,
+            col_count == 1,
+        );
+    }
+}
+
+fn render_distribution_lines(
+    f: &mut Frame,
+    area: Rect,
+    bins: &[(String, u64)],
+    max_count: u64,
+    color: Color,
+    show_overflow_hint: bool,
+) {
+    if area.height == 0 || area.width < 12 {
+        return;
+    }
+
+    let max_rows = area.height as usize;
     let count_w = (max_count.ilog10() as usize + 1).max(3);
     let label_w = 15usize;
     let reserved = label_w + 1 + count_w + 1;
-    let bar_w = inner.width.saturating_sub(reserved as u16) as usize;
+    let bar_w = area.width.saturating_sub(reserved as u16) as usize;
 
     let mut lines = Vec::new();
     for (label, count) in bins.iter().take(max_rows) {
@@ -2642,23 +2711,20 @@ fn draw_distribution_bars(
         lines.push(line);
     }
 
-    if bins.len() > max_rows {
+    if show_overflow_hint && bins.len() > max_rows {
         lines.push(Line::from(Span::styled(
             format!("... +{} more bins", bins.len() - max_rows),
             Style::default().fg(Color::DarkGray),
         )));
     }
 
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 fn draw_health_tab(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(14),
-            Constraint::Min(10),
-        ])
+        .constraints([Constraint::Length(14), Constraint::Min(10)])
         .split(area);
 
     render_compare_table(
@@ -2679,7 +2745,11 @@ fn draw_health_tab(f: &mut Frame, app: &mut App, area: Rect) {
         .join("\n");
 
     let findings = Paragraph::new(findings_text)
-        .block(Block::default().borders(Borders::ALL).title("Health findings"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Health findings"),
+        )
         .wrap(Wrap { trim: true });
     f.render_widget(findings, chunks[1]);
 }
@@ -2691,8 +2761,11 @@ fn render_compare_table(
     rows: &[CompareRowData],
     state: &mut TableState,
 ) {
-    let header = Row::new(vec!["metric", "A", "B", "delta (B-A)"])
-        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec!["metric", "A", "B", "delta (B-A)"]).style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let data_rows = rows
         .iter()
@@ -2702,7 +2775,13 @@ fn render_compare_table(
                 DeltaKind::Worse => Style::default().fg(Color::Red),
                 DeltaKind::Neutral => Style::default().fg(Color::Gray),
             };
-            Row::new(vec![r.metric.clone(), r.a.clone(), r.b.clone(), r.delta.clone()]).style(style)
+            Row::new(vec![
+                r.metric.clone(),
+                r.a.clone(),
+                r.b.clone(),
+                r.delta.clone(),
+            ])
+            .style(style)
         })
         .collect::<Vec<_>>();
 
@@ -2796,9 +2875,15 @@ fn chart_bounds(a: &[(f64, f64)], b: &[(f64, f64)]) -> (f64, f64, f64, f64) {
     }
 
     let min_x = all.iter().map(|(x, _)| *x).fold(f64::INFINITY, f64::min);
-    let max_x = all.iter().map(|(x, _)| *x).fold(f64::NEG_INFINITY, f64::max);
+    let max_x = all
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::NEG_INFINITY, f64::max);
     let min_y = all.iter().map(|(_, y)| *y).fold(f64::INFINITY, f64::min);
-    let max_y = all.iter().map(|(_, y)| *y).fold(f64::NEG_INFINITY, f64::max);
+    let max_y = all
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
 
     let y_pad = ((max_y - min_y) * 0.1).max(0.02);
 
