@@ -1,4 +1,17 @@
 use super::*;
+use ratatui::symbols;
+use ratatui::widgets::{
+    Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Row, Table, Wrap,
+};
+use throbber_widgets_tui::{BRAILLE_SIX, Throbber, WhichUse};
+
+struct LineChartSpec<'a> {
+    title: &'a str,
+    left_name: &'a str,
+    right_name: &'a str,
+    x_title: &'a str,
+    y_title: &'a str,
+}
 
 pub(super) fn draw_loading_ui(f: &mut Frame, label: &str, throbber_state: &mut ThrobberState) {
     draw_loading_centered(f, f.area(), label, throbber_state);
@@ -212,16 +225,19 @@ fn draw_summary_tab(f: &mut Frame, app: &mut App, area: Rect) {
         .wrap(Wrap { trim: true });
     f.render_widget(findings, chunks[1]);
 
+    let chart = LineChartSpec {
+        title: "Reward trajectory",
+        left_name: &app.left.label,
+        right_name: &app.right.label,
+        x_title: "step",
+        y_title: "reward",
+    };
     draw_line_chart(
         f,
         chunks[2],
-        "Reward trajectory",
-        &app.left.label,
-        &app.right.label,
+        &chart,
         &app.reward_chart_left,
         &app.reward_chart_right,
-        "step",
-        "reward",
     );
 }
 
@@ -514,17 +530,13 @@ fn render_compare_table(
 fn draw_line_chart(
     f: &mut Frame,
     area: Rect,
-    title: &str,
-    a_name: &str,
-    b_name: &str,
+    spec: &LineChartSpec<'_>,
     a_points: &[(f64, f64)],
     b_points: &[(f64, f64)],
-    x_title: &str,
-    y_title: &str,
 ) {
     if a_points.is_empty() && b_points.is_empty() {
         let empty = Paragraph::new("No chart data")
-            .block(Block::default().borders(Borders::ALL).title(title));
+            .block(Block::default().borders(Borders::ALL).title(spec.title));
         f.render_widget(empty, area);
         return;
     }
@@ -533,13 +545,13 @@ fn draw_line_chart(
 
     let datasets = vec![
         Dataset::default()
-            .name(a_name)
+            .name(spec.left_name)
             .graph_type(GraphType::Line)
             .marker(symbols::Marker::Braille)
             .style(Style::default().fg(Color::Cyan))
             .data(a_points),
         Dataset::default()
-            .name(b_name)
+            .name(spec.right_name)
             .graph_type(GraphType::Line)
             .marker(symbols::Marker::Braille)
             .style(Style::default().fg(Color::Magenta))
@@ -550,10 +562,10 @@ fn draw_line_chart(
     let mid_y = (min_y + max_y) / 2.0;
 
     let chart = Chart::new(datasets)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(Block::default().borders(Borders::ALL).title(spec.title))
         .x_axis(
             Axis::default()
-                .title(x_title)
+                .title(spec.x_title)
                 .bounds([min_x, max_x])
                 .labels(vec![
                     Line::from(format!("{min_x:.2}")),
@@ -563,7 +575,7 @@ fn draw_line_chart(
         )
         .y_axis(
             Axis::default()
-                .title(y_title)
+                .title(spec.y_title)
                 .bounds([min_y, max_y])
                 .labels(vec![
                     Line::from(format!("{min_y:.2}")),
