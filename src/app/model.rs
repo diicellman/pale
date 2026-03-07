@@ -59,7 +59,7 @@ pub(crate) struct CompareRowData {
 #[derive(Debug, Clone)]
 pub(crate) struct Comparison {
     pub(crate) rows: Vec<CompareRowData>,
-    pub(crate) findings: Vec<String>,
+    pub(crate) findings_text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +126,7 @@ pub(crate) struct DistributionBundle {
 #[derive(Debug, Clone)]
 pub(crate) struct DistributionComparison {
     pub(crate) rows: Vec<CompareRowData>,
-    pub(crate) findings: Vec<String>,
+    pub(crate) findings_text: String,
     pub(crate) reward_bars_a: Vec<(String, u64)>,
     pub(crate) reward_bars_b: Vec<(String, u64)>,
 }
@@ -158,7 +158,7 @@ pub(crate) struct HealthData {
 #[derive(Debug, Clone)]
 pub(crate) struct HealthComparison {
     pub(crate) rows: Vec<CompareRowData>,
-    pub(crate) findings: Vec<String>,
+    pub(crate) findings_text: String,
 }
 
 #[derive(Debug, Clone, Default)]

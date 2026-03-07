@@ -8,6 +8,15 @@ use super::model::*;
 const MAX_HISTOGRAM_DEPTH: usize = 64;
 const MAX_HISTOGRAM_NODES: usize = 4096;
 
+fn numbered_findings(findings: &[String]) -> String {
+    findings
+        .iter()
+        .enumerate()
+        .map(|(idx, finding)| format!("{}. {}", idx + 1, finding))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub(super) fn parse_metric_points(root: &Value) -> Result<(Vec<MetricPoint>, String)> {
     let metrics = if let Some(arr) = root.get("metrics").and_then(Value::as_array) {
         arr
@@ -144,7 +153,11 @@ fn to_i64(v: &Value) -> Option<i64> {
     }
 }
 
-pub(super) fn summarize_points(points: &[MetricPoint], window: usize, thresholds: &[f64]) -> Summary {
+pub(super) fn summarize_points(
+    points: &[MetricPoint],
+    window: usize,
+    thresholds: &[f64],
+) -> Summary {
     let steps = points.len();
     let (best_step, best_reward) = points
         .iter()
@@ -236,11 +249,7 @@ where
         sum += value;
         count += 1;
     }
-    if count == 0 {
-        0.0
-    } else {
-        sum / count as f64
-    }
+    if count == 0 { 0.0 } else { sum / count as f64 }
 }
 
 fn stddev<I>(it: I, mu: f64) -> f64
@@ -293,9 +302,13 @@ pub(super) fn compare_runs(a: &RunData, b: &RunData, thresholds: &[f64]) -> Comp
         metric_row("steps", sa.steps as f64, sb.steps as f64, false, |v| {
             format!("{}", v as usize)
         }),
-        metric_row("final_reward", sa.final_reward, sb.final_reward, true, |v| {
-            format!("{v:.4}")
-        }),
+        metric_row(
+            "final_reward",
+            sa.final_reward,
+            sb.final_reward,
+            true,
+            |v| format!("{v:.4}"),
+        ),
         metric_row("best_reward", sa.best_reward, sb.best_reward, true, |v| {
             format!("{v:.4}")
         }),
@@ -319,9 +332,13 @@ pub(super) fn compare_runs(a: &RunData, b: &RunData, thresholds: &[f64]) -> Comp
             false,
             |v| format!("{v:.4}"),
         ),
-        metric_row("last_window_slope", sa.last_slope, sb.last_slope, true, |v| {
-            format!("{v:.6}")
-        }),
+        metric_row(
+            "last_window_slope",
+            sa.last_slope,
+            sb.last_slope,
+            true,
+            |v| format!("{v:.6}"),
+        ),
         metric_row("early_mean", sa.early.mean, sb.early.mean, true, |v| {
             format!("{v:.4}")
         }),
@@ -433,7 +450,11 @@ pub(super) fn compare_runs(a: &RunData, b: &RunData, thresholds: &[f64]) -> Comp
         );
     }
 
-    Comparison { rows, findings }
+    let findings_text = numbered_findings(&findings);
+    Comparison {
+        rows,
+        findings_text,
+    }
 }
 
 pub(super) fn build_distribution_comparison(
@@ -558,7 +579,9 @@ pub(super) fn build_distribution_comparison(
                 "Reward distribution drift is high (JS={js:.4}); policy behavior likely shifted meaningfully."
             ));
         } else {
-            findings.push(format!("Reward distribution drift is moderate/low (JS={js:.4})."));
+            findings.push(format!(
+                "Reward distribution drift is moderate/low (JS={js:.4})."
+            ));
         }
     } else {
         findings.push("Reward distribution unavailable for one or both runs.".to_string());
@@ -570,9 +593,10 @@ pub(super) fn build_distribution_comparison(
         findings.push("Advantage distribution unavailable for one or both runs.".to_string());
     }
 
+    let findings_text = numbered_findings(&findings);
     DistributionComparison {
         rows,
-        findings,
+        findings_text,
         reward_bars_a: a
             .reward
             .as_ref()
@@ -597,15 +621,23 @@ pub(super) fn build_health_comparison(a: &HealthData, b: &HealthData) -> HealthC
     ));
     rows.push(optional_metric_row(
         "warnings_per_1k_lines (lower better)",
-        a.log.as_ref().map(|x| per_1k(x.warnings as f64, x.lines as f64)),
-        b.log.as_ref().map(|x| per_1k(x.warnings as f64, x.lines as f64)),
+        a.log
+            .as_ref()
+            .map(|x| per_1k(x.warnings as f64, x.lines as f64)),
+        b.log
+            .as_ref()
+            .map(|x| per_1k(x.warnings as f64, x.lines as f64)),
         false,
         |v| format!("{v:.2}"),
     ));
     rows.push(optional_metric_row(
         "errors_per_1k_lines (lower better)",
-        a.log.as_ref().map(|x| per_1k(x.errors as f64, x.lines as f64)),
-        b.log.as_ref().map(|x| per_1k(x.errors as f64, x.lines as f64)),
+        a.log
+            .as_ref()
+            .map(|x| per_1k(x.errors as f64, x.lines as f64)),
+        b.log
+            .as_ref()
+            .map(|x| per_1k(x.errors as f64, x.lines as f64)),
         false,
         |v| format!("{v:.2}"),
     ));
@@ -677,7 +709,11 @@ pub(super) fn build_health_comparison(a: &HealthData, b: &HealthData) -> HealthC
         findings.push("No strong health deltas under default heuristics.".to_string());
     }
 
-    HealthComparison { rows, findings }
+    let findings_text = numbered_findings(&findings);
+    HealthComparison {
+        rows,
+        findings_text,
+    }
 }
 
 fn per_1k(count: f64, denom: f64) -> f64 {
@@ -801,7 +837,12 @@ pub(super) fn parse_distribution_bundle(root: &Value) -> DistributionBundle {
 
 pub(super) fn bins_to_bar_data(bins: &[HistogramBin]) -> Vec<(String, u64)> {
     bins.iter()
-        .map(|b| (format!("{:.3}-{:.3}", b.lower, b.upper), b.count.round().max(0.0) as u64))
+        .map(|b| {
+            (
+                format!("{:.3}-{:.3}", b.lower, b.upper),
+                b.count.round().max(0.0) as u64,
+            )
+        })
         .collect::<Vec<_>>()
 }
 
@@ -920,13 +961,31 @@ fn parse_bins_array(arr: &[Value]) -> Option<Vec<HistogramBin>> {
         } else {
             let lower = get_obj_f64(
                 obj,
-                &["lower", "low", "min", "start", "left", "bin_start", "bucket_start", "x0"],
+                &[
+                    "lower",
+                    "low",
+                    "min",
+                    "start",
+                    "left",
+                    "bin_start",
+                    "bucket_start",
+                    "x0",
+                ],
             )
             .or_else(|| get_obj_f64(obj, &["x"]))?;
 
             let upper = get_obj_f64(
                 obj,
-                &["upper", "high", "max", "end", "right", "bin_end", "bucket_end", "x1"],
+                &[
+                    "upper",
+                    "high",
+                    "max",
+                    "end",
+                    "right",
+                    "bin_end",
+                    "bucket_end",
+                    "x1",
+                ],
             )
             .or(Some(lower + 1.0))?;
 
@@ -938,17 +997,21 @@ fn parse_bins_array(arr: &[Value]) -> Option<Vec<HistogramBin>> {
             &["count", "n", "freq", "frequency", "value", "y", "mass"],
         )?;
 
-        let (lower, upper) = if upper >= lower { (lower, upper) } else { (upper, lower) };
+        let (lower, upper) = if upper >= lower {
+            (lower, upper)
+        } else {
+            (upper, lower)
+        };
         if count.is_finite() && lower.is_finite() && upper.is_finite() && count >= 0.0 {
-            bins.push(HistogramBin { lower, upper, count });
+            bins.push(HistogramBin {
+                lower,
+                upper,
+                count,
+            });
         }
     }
 
-    if bins.len() < 2 {
-        None
-    } else {
-        Some(bins)
-    }
+    if bins.len() < 2 { None } else { Some(bins) }
 }
 
 fn parse_bin_range(s: &str) -> Option<(f64, f64)> {

@@ -6,11 +6,6 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use crossterm::event::{self, Event, KeyCode};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::prelude::*;
 use ratatui::widgets::TableState;
 use serde_json::Value;
 use throbber_widgets_tui::ThrobberState;
@@ -18,12 +13,13 @@ use throbber_widgets_tui::ThrobberState;
 mod analysis;
 mod model;
 mod prime;
-#[path = "ui.rs"]
+mod runner;
 mod ui;
 
 use self::analysis::*;
 use self::model::*;
 use self::prime::*;
+use self::runner::{TerminalBackend, with_terminal};
 
 pub(crate) fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -89,25 +85,10 @@ struct CompareArgs {
 }
 
 fn run_picker_mode(prefetch_runs: usize) -> Result<()> {
-    enable_raw_mode().context("failed to enable raw mode")?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen).context("failed to enter alternate screen")?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).context("failed to create terminal")?;
-
-    let result = run_picker_session(&mut terminal, prefetch_runs);
-
-    disable_raw_mode().ok();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
-    terminal.show_cursor().ok();
-
-    result
+    with_terminal(|terminal| run_picker_session(terminal, prefetch_runs))
 }
 
-fn run_picker_session(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    prefetch_runs: usize,
-) -> Result<()> {
+fn run_picker_session(terminal: &mut TerminalBackend, prefetch_runs: usize) -> Result<()> {
     let mut app = PickerApp {
         runs: Vec::new(),
         selected: 0,
@@ -170,7 +151,7 @@ fn apply_picker_payload(app: &mut PickerApp, payload: PickerFetchResult) {
 }
 
 fn handle_picker_key(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    terminal: &mut TerminalBackend,
     app: &mut PickerApp,
     rx: &mut mpsc::Receiver<Result<PickerFetchResult, String>>,
     key: KeyCode,
@@ -268,7 +249,7 @@ fn start_picker_fetch(
 }
 
 fn load_compare_app_with_spinner(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    terminal: &mut TerminalBackend,
     label: &str,
     args: CompareArgs,
 ) -> Result<App> {
@@ -315,8 +296,16 @@ fn fetch_runs_page(limit: usize, page: usize) -> Result<Vec<RunListItem>> {
     Ok(runs
         .iter()
         .map(|run| RunListItem {
-            id: run.get("id").and_then(Value::as_str).unwrap_or("?").to_string(),
-            name: run.get("name").and_then(Value::as_str).unwrap_or("?").to_string(),
+            id: run
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string(),
+            name: run
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string(),
             status: run
                 .get("status")
                 .and_then(Value::as_str)
@@ -337,25 +326,13 @@ fn fetch_runs_page(limit: usize, page: usize) -> Result<Vec<RunListItem>> {
 }
 
 fn run_compare(args: CompareArgs) -> Result<()> {
-    enable_raw_mode().context("failed to enable raw mode")?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen).context("failed to enter alternate screen")?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).context("failed to create terminal")?;
-
-    let result = (|| -> Result<()> {
-        let mut app = load_compare_app_with_spinner(&mut terminal, "Loading compare view...", args)?;
-        match run_app(&mut terminal, &mut app)? {
+    with_terminal(|terminal| {
+        let mut app = load_compare_app_with_spinner(terminal, "Loading compare view...", args)?;
+        match run_app(terminal, &mut app)? {
             AppLoopAction::Quit => Ok(()),
-            AppLoopAction::BackToPicker => run_picker_session(&mut terminal, 30),
+            AppLoopAction::BackToPicker => run_picker_session(terminal, 30),
         }
-    })();
-
-    disable_raw_mode().ok();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
-    terminal.show_cursor().ok();
-
-    result
+    })
 }
 
 fn build_compare_app(args: CompareArgs) -> Result<App> {
@@ -471,7 +448,12 @@ fn resolve_initial_distribution_index(app: &mut App, requested_step: Option<i64>
         .rows
         .iter()
         .find(|row| row.metric == "distribution_step")
-        .and_then(|row| row.a.parse::<usize>().ok().or_else(|| row.b.parse::<usize>().ok()))
+        .and_then(|row| {
+            row.a
+                .parse::<usize>()
+                .ok()
+                .or_else(|| row.b.parse::<usize>().ok())
+        })
         && let Some(index) = app.dist_steps.iter().position(|s| *s as usize == step)
     {
         app.current_dist_index = index;
@@ -479,7 +461,11 @@ fn resolve_initial_distribution_index(app: &mut App, requested_step: Option<i64>
 }
 
 fn ensure_step_selected(app: &mut App, step: i64) {
-    if let Some(index) = app.dist_steps.iter().position(|candidate| *candidate == step) {
+    if let Some(index) = app
+        .dist_steps
+        .iter()
+        .position(|candidate| *candidate == step)
+    {
         app.current_dist_index = index;
         return;
     }
@@ -487,7 +473,11 @@ fn ensure_step_selected(app: &mut App, step: i64) {
     app.dist_steps.push(step);
     app.dist_steps.sort_unstable();
     app.dist_steps.dedup();
-    if let Some(index) = app.dist_steps.iter().position(|candidate| *candidate == step) {
+    if let Some(index) = app
+        .dist_steps
+        .iter()
+        .position(|candidate| *candidate == step)
+    {
         app.current_dist_index = index;
     }
 }
@@ -520,7 +510,9 @@ fn load_side(
         (Some(id), None) => {
             let raw = fetch_prime_metrics(id)
                 .with_context(|| format!("failed to fetch metrics for run {id}"))?;
-            let label = label_override.cloned().unwrap_or_else(|| format!("run:{id}"));
+            let label = label_override
+                .cloned()
+                .unwrap_or_else(|| format!("run:{id}"));
             (label, raw, Some(id.clone()))
         }
         (None, Some(path)) => {
@@ -591,10 +583,7 @@ fn collect_side_extras(
     }
 }
 
-fn run_app(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    app: &mut App,
-) -> Result<AppLoopAction> {
+fn run_app(terminal: &mut TerminalBackend, app: &mut App) -> Result<AppLoopAction> {
     loop {
         poll_distribution_fetch(app);
         if app.dist_loading {
@@ -650,7 +639,8 @@ fn shift_distribution_step(app: &mut App, delta: isize) {
 }
 
 fn start_distribution_step_fetch(app: &mut App, step: i64) {
-    let (Some(left_id), Some(right_id)) = (app.left.run_id.clone(), app.right.run_id.clone()) else {
+    let (Some(left_id), Some(right_id)) = (app.left.run_id.clone(), app.right.run_id.clone())
+    else {
         return;
     };
 
@@ -727,7 +717,10 @@ fn poll_distribution_fetch(app: &mut App) {
 fn move_active_selection(app: &mut App, delta: isize) {
     let (state, len) = match app.active_tab {
         Tab::Summary => (&mut app.summary_state, app.summary_comparison.rows.len()),
-        Tab::Distributions => (&mut app.distributions_state, app.distribution_comparison.rows.len()),
+        Tab::Distributions => (
+            &mut app.distributions_state,
+            app.distribution_comparison.rows.len(),
+        ),
         Tab::Health => (&mut app.health_state, app.health_comparison.rows.len()),
     };
 

@@ -1,9 +1,13 @@
-use super::*;
+use super::model::{App, CompareRowData, DeltaKind, PickerApp, Tab};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::prelude::Frame;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Row, Table, Wrap,
+    Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Row, Table, TableState, Wrap,
 };
-use throbber_widgets_tui::{BRAILLE_SIX, Throbber, WhichUse};
+use throbber_widgets_tui::{BRAILLE_SIX, Throbber, ThrobberState, WhichUse};
 
 struct LineChartSpec<'a> {
     title: &'a str,
@@ -42,20 +46,20 @@ fn draw_loading_centered(
         .label(label)
         .throbber_set(BRAILLE_SIX)
         .use_type(WhichUse::Spin)
-        .throbber_style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
+        .throbber_style(
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        );
     let line = throbber.to_line(throbber_state);
     let p = Paragraph::new(line).alignment(Alignment::Center);
     f.render_widget(p, inner[1]);
 }
 
-
 pub(super) fn draw_picker_ui(f: &mut Frame, app: &PickerApp) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(10),
-            Constraint::Length(3),
-        ])
+        .constraints([Constraint::Min(10), Constraint::Length(3)])
         .split(f.area());
 
     if app.loading {
@@ -72,8 +76,11 @@ pub(super) fn draw_picker_ui(f: &mut Frame, app: &PickerApp) {
             .wrap(Wrap { trim: true });
         f.render_widget(p, chunks[0]);
     } else {
-        let header = Row::new(vec!["sel", "id", "name", "status", "model", "updated"])
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        let header = Row::new(vec!["sel", "id", "name", "status", "model", "updated"]).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
 
         let rows = app
             .runs
@@ -131,7 +138,6 @@ pub(super) fn draw_picker_ui(f: &mut Frame, app: &PickerApp) {
     f.render_widget(foot, chunks[1]);
 }
 
-
 pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -145,11 +151,8 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
 
     let left_id = app.left.run_id.as_deref().unwrap_or("-");
     let right_id = app.right.run_id.as_deref().unwrap_or("-");
-    let title = Paragraph::new(format!(
-        "A: {} | B: {}",
-        left_id, right_id
-    ))
-    .block(Block::default().borders(Borders::ALL).title("Session"));
+    let title = Paragraph::new(format!("A: {} | B: {}", left_id, right_id))
+        .block(Block::default().borders(Borders::ALL).title("Session"));
     f.render_widget(title, chunks[0]);
 
     draw_tabs(f, app, chunks[1]);
@@ -160,8 +163,9 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         Tab::Health => draw_health_tab(f, app, chunks[2]),
     }
 
-    let nav = Paragraph::new("q quit | b picker | 1/2/3 tabs | ←/→ tabs | j/k rows | h/l dist-step")
-        .block(Block::default().borders(Borders::ALL).title("Keys"));
+    let nav =
+        Paragraph::new("q quit | b picker | 1/2/3 tabs | ←/→ tabs | j/k rows | h/l dist-step")
+            .block(Block::default().borders(Borders::ALL).title("Keys"));
     f.render_widget(nav, chunks[3]);
 }
 
@@ -211,16 +215,7 @@ fn draw_summary_tab(f: &mut Frame, app: &mut App, area: Rect) {
         &mut app.summary_state,
     );
 
-    let findings_text = app
-        .summary_comparison
-        .findings
-        .iter()
-        .enumerate()
-        .map(|(i, x)| format!("{}. {}", i + 1, x))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let findings = Paragraph::new(findings_text)
+    let findings = Paragraph::new(app.summary_comparison.findings_text.as_str())
         .block(Block::default().borders(Borders::ALL).title("Key findings"))
         .wrap(Wrap { trim: true });
     f.render_widget(findings, chunks[1]);
@@ -317,23 +312,21 @@ fn draw_distributions_tab(f: &mut Frame, app: &mut App, area: Rect) {
         );
     }
 
-    let findings_text = app
-        .distribution_comparison
-        .findings
-        .iter()
-        .enumerate()
-        .map(|(i, x)| format!("{}. {}", i + 1, x))
-        .collect::<Vec<_>>()
-        .join("\n");
-
     let findings_text = if let Some(err) = &app.dist_error {
-        format!("{findings_text}\n\nFetch error: {err}")
+        format!(
+            "{}\n\nFetch error: {err}",
+            app.distribution_comparison.findings_text
+        )
     } else {
-        findings_text
+        app.distribution_comparison.findings_text.clone()
     };
 
     let findings = Paragraph::new(findings_text)
-        .block(Block::default().borders(Borders::ALL).title("Distribution findings"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Distribution findings"),
+        )
         .wrap(Wrap { trim: true });
     f.render_widget(findings, chunks[2]);
 }
@@ -360,42 +353,7 @@ fn draw_distribution_bars(
     }
 
     let max_count = bins.iter().map(|(_, c)| *c).max().unwrap_or(1).max(1);
-    let max_rows = inner.height as usize;
-
-    let col_count = if bins.len() > max_rows && inner.width >= 36 {
-        2usize
-    } else {
-        1usize
-    };
-
-    let columns = if col_count == 2 {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(inner)
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(100)])
-            .split(inner)
-    };
-
-    let per_col = bins.len().div_ceil(col_count);
-    for (idx, col_area) in columns.iter().enumerate() {
-        let start = idx * per_col;
-        if start >= bins.len() {
-            continue;
-        }
-        let end = (start + per_col).min(bins.len());
-        render_distribution_lines(
-            f,
-            *col_area,
-            &bins[start..end],
-            max_count,
-            color,
-            col_count == 1,
-        );
-    }
+    render_distribution_lines(f, inner, bins, max_count, color, true);
 }
 
 fn render_distribution_lines(
@@ -417,53 +375,87 @@ fn render_distribution_lines(
     let bar_w = area.width.saturating_sub(reserved as u16) as usize;
 
     let mut lines = Vec::new();
-    for (label, count) in bins.iter().take(max_rows) {
-        let truncated = if label.len() > label_w {
-            let mut s = label[..label_w.saturating_sub(1)].to_string();
-            s.push('~');
-            s
-        } else {
-            format!("{label:<label_w$}")
-        };
+    if bins.len() <= max_rows {
+        for (label, count) in bins {
+            lines.push(distribution_line(
+                label, *count, label_w, count_w, bar_w, max_count, color,
+            ));
+        }
+    } else if max_rows <= 2 {
+        for (label, count) in bins.iter().rev().take(max_rows).rev() {
+            lines.push(distribution_line(
+                label, *count, label_w, count_w, bar_w, max_count, color,
+            ));
+        }
+    } else {
+        let visible_rows = max_rows - 1;
+        let head_rows = visible_rows / 2;
+        let tail_rows = visible_rows - head_rows;
 
-        let len = if *count == 0 || bar_w == 0 {
-            0
-        } else {
-            ((*count as f64 / max_count as f64) * bar_w as f64)
-                .round()
-                .max(1.0) as usize
-        };
+        for (label, count) in bins.iter().take(head_rows) {
+            lines.push(distribution_line(
+                label, *count, label_w, count_w, bar_w, max_count, color,
+            ));
+        }
 
-        let line = Line::from(vec![
-            Span::styled(truncated, Style::default().fg(Color::Gray)),
-            Span::raw(" "),
-            Span::styled(
-                format!("{count:>count_w$}"),
-                Style::default().fg(Color::White),
-            ),
-            Span::raw(" "),
-            Span::styled("█".repeat(len), Style::default().fg(color)),
-        ]);
-        lines.push(line);
-    }
+        if show_overflow_hint {
+            lines.push(Line::from(Span::styled(
+                format!("... +{} hidden bins ...", bins.len() - visible_rows),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
 
-    if show_overflow_hint && bins.len() > max_rows {
-        lines.push(Line::from(Span::styled(
-            format!("... +{} more bins", bins.len() - max_rows),
-            Style::default().fg(Color::DarkGray),
-        )));
+        for (label, count) in bins.iter().skip(bins.len() - tail_rows) {
+            lines.push(distribution_line(
+                label, *count, label_w, count_w, bar_w, max_count, color,
+            ));
+        }
     }
 
     f.render_widget(Paragraph::new(lines), area);
 }
 
+fn distribution_line(
+    label: &str,
+    count: u64,
+    label_w: usize,
+    count_w: usize,
+    bar_w: usize,
+    max_count: u64,
+    color: Color,
+) -> Line<'static> {
+    let truncated = if label.len() > label_w {
+        let mut s = label[..label_w.saturating_sub(1)].to_string();
+        s.push('~');
+        s
+    } else {
+        format!("{label:<label_w$}")
+    };
+
+    let len = if count == 0 || bar_w == 0 {
+        0
+    } else {
+        ((count as f64 / max_count as f64) * bar_w as f64)
+            .round()
+            .max(1.0) as usize
+    };
+
+    Line::from(vec![
+        Span::styled(truncated, Style::default().fg(Color::Gray)),
+        Span::raw(" "),
+        Span::styled(
+            format!("{count:>count_w$}"),
+            Style::default().fg(Color::White),
+        ),
+        Span::raw(" "),
+        Span::styled("█".repeat(len), Style::default().fg(color)),
+    ])
+}
+
 fn draw_health_tab(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(14),
-            Constraint::Min(10),
-        ])
+        .constraints([Constraint::Length(14), Constraint::Min(10)])
         .split(area);
 
     render_compare_table(
@@ -474,17 +466,12 @@ fn draw_health_tab(f: &mut Frame, app: &mut App, area: Rect) {
         &mut app.health_state,
     );
 
-    let findings_text = app
-        .health_comparison
-        .findings
-        .iter()
-        .enumerate()
-        .map(|(i, x)| format!("{}. {}", i + 1, x))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let findings = Paragraph::new(findings_text)
-        .block(Block::default().borders(Borders::ALL).title("Health findings"))
+    let findings = Paragraph::new(app.health_comparison.findings_text.as_str())
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Health findings"),
+        )
         .wrap(Wrap { trim: true });
     f.render_widget(findings, chunks[1]);
 }
@@ -496,8 +483,11 @@ fn render_compare_table(
     rows: &[CompareRowData],
     state: &mut TableState,
 ) {
-    let header = Row::new(vec!["metric", "A", "B", "delta (B-A)"])
-        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    let header = Row::new(vec!["metric", "A", "B", "delta (B-A)"]).style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let data_rows = rows
         .iter()
@@ -507,7 +497,13 @@ fn render_compare_table(
                 DeltaKind::Worse => Style::default().fg(Color::Red),
                 DeltaKind::Neutral => Style::default().fg(Color::Gray),
             };
-            Row::new(vec![r.metric.clone(), r.a.clone(), r.b.clone(), r.delta.clone()]).style(style)
+            Row::new(vec![
+                r.metric.clone(),
+                r.a.clone(),
+                r.b.clone(),
+                r.delta.clone(),
+            ])
+            .style(style)
         })
         .collect::<Vec<_>>();
 
@@ -597,9 +593,15 @@ fn chart_bounds(a: &[(f64, f64)], b: &[(f64, f64)]) -> (f64, f64, f64, f64) {
     }
 
     let min_x = all.iter().map(|(x, _)| *x).fold(f64::INFINITY, f64::min);
-    let max_x = all.iter().map(|(x, _)| *x).fold(f64::NEG_INFINITY, f64::max);
+    let max_x = all
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::NEG_INFINITY, f64::max);
     let min_y = all.iter().map(|(_, y)| *y).fold(f64::INFINITY, f64::min);
-    let max_y = all.iter().map(|(_, y)| *y).fold(f64::NEG_INFINITY, f64::max);
+    let max_y = all
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
 
     let y_pad = ((max_y - min_y) * 0.1).max(0.02);
 
