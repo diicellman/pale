@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc;
 
 use anyhow::Result;
@@ -183,8 +184,12 @@ pub(crate) struct App {
     pub(crate) dist_steps: Vec<i64>,
     pub(crate) current_dist_index: usize,
     pub(crate) dist_loading: bool,
+    pub(crate) dist_pending_step: Option<i64>,
     pub(crate) dist_error: Option<String>,
-    pub(crate) dist_rx: Option<mpsc::Receiver<Result<DistributionFetchResult, String>>>,
+    pub(crate) dist_rx: mpsc::Receiver<DistributionFetchOutcome>,
+    pub(crate) dist_tx: mpsc::Sender<DistributionFetchOutcome>,
+    pub(crate) dist_cache: HashMap<i64, DistributionFetchResult>,
+    pub(crate) dist_in_flight: HashSet<i64>,
     pub(crate) dist_throbber: ThrobberState,
 }
 
@@ -193,6 +198,12 @@ pub(crate) struct DistributionFetchResult {
     pub(crate) step: i64,
     pub(crate) left: DistributionBundle,
     pub(crate) right: DistributionBundle,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DistributionFetchOutcome {
+    pub(crate) step: i64,
+    pub(crate) result: Result<DistributionFetchResult, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +223,10 @@ pub(crate) struct PickerApp {
     pub(crate) page: usize,
     pub(crate) pending_page: usize,
     pub(crate) per_page: usize,
+    pub(crate) page_cache: HashMap<usize, Vec<RunListItem>>,
+    pub(crate) page_cache_order: VecDeque<usize>,
+    pub(crate) in_flight_pages: HashSet<usize>,
+    pub(crate) cache_capacity: usize,
     pub(crate) loading: bool,
     pub(crate) error: Option<String>,
     pub(crate) throbber: ThrobberState,
@@ -227,4 +242,10 @@ pub(crate) enum AppLoopAction {
 pub(crate) struct PickerFetchResult {
     pub(crate) page: usize,
     pub(crate) runs: Vec<RunListItem>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PickerFetchOutcome {
+    pub(crate) page: usize,
+    pub(crate) result: Result<Vec<RunListItem>, String>,
 }

@@ -21,6 +21,8 @@ use self::model::*;
 use self::prime::*;
 use self::runner::{TerminalBackend, with_terminal};
 
+const PICKER_CACHE_PAGES: usize = 8;
+
 pub(crate) fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -89,6 +91,7 @@ fn run_picker_mode(prefetch_runs: usize) -> Result<()> {
 }
 
 fn run_picker_session(terminal: &mut TerminalBackend, prefetch_runs: usize) -> Result<()> {
+    let (tx, rx) = mpsc::channel::<PickerFetchOutcome>();
     let mut app = PickerApp {
         runs: Vec::new(),
         selected: 0,
@@ -97,36 +100,27 @@ fn run_picker_session(terminal: &mut TerminalBackend, prefetch_runs: usize) -> R
         page: 1,
         pending_page: 1,
         per_page: prefetch_runs.max(1),
-        loading: true,
+        page_cache: Default::default(),
+        page_cache_order: Default::default(),
+        in_flight_pages: Default::default(),
+        cache_capacity: PICKER_CACHE_PAGES,
+        loading: false,
         error: None,
         throbber: ThrobberState::default(),
     };
-    let mut rx = start_picker_fetch(app.pending_page, app.per_page);
+    request_picker_page(&mut app, &tx, 1);
 
     loop {
+        poll_picker_fetches(&mut app, &rx, &tx);
         if app.loading {
             app.throbber.calc_next();
-            match rx.try_recv() {
-                Ok(Ok(payload)) => apply_picker_payload(&mut app, payload),
-                Ok(Err(err)) => {
-                    app.error = Some(err);
-                    app.loading = false;
-                    app.pending_page = app.page;
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    app.error = Some("background fetch channel disconnected".to_string());
-                    app.loading = false;
-                    app.pending_page = app.page;
-                }
-            }
         }
 
         terminal.draw(|f| ui::draw_picker_ui(f, &app))?;
 
         if event::poll(Duration::from_millis(150))?
             && let Event::Key(key) = event::read()?
-            && handle_picker_key(terminal, &mut app, &mut rx, key.code)?
+            && handle_picker_key(terminal, &mut app, &tx, key.code)?
         {
             return Ok(());
         }
@@ -150,10 +144,130 @@ fn apply_picker_payload(app: &mut PickerApp, payload: PickerFetchResult) {
     app.selected_b = None;
 }
 
+fn request_picker_page(app: &mut PickerApp, tx: &mpsc::Sender<PickerFetchOutcome>, page: usize) {
+    app.pending_page = page;
+    app.error = None;
+
+    if let Some(runs) = app.page_cache.get(&page).cloned() {
+        touch_picker_page_cache(app, page);
+        app.loading = false;
+        apply_picker_payload(app, PickerFetchResult { page, runs });
+        prefetch_picker_neighbors(app, tx);
+        return;
+    }
+
+    app.loading = true;
+    queue_picker_fetch(app, tx, page);
+}
+
+fn poll_picker_fetches(
+    app: &mut PickerApp,
+    rx: &mpsc::Receiver<PickerFetchOutcome>,
+    tx: &mpsc::Sender<PickerFetchOutcome>,
+) {
+    loop {
+        match rx.try_recv() {
+            Ok(outcome) => {
+                app.in_flight_pages.remove(&outcome.page);
+                match outcome.result {
+                    Ok(runs) => {
+                        cache_picker_page(app, outcome.page, runs.clone());
+                        if app.loading && outcome.page == app.pending_page {
+                            apply_picker_payload(
+                                app,
+                                PickerFetchResult {
+                                    page: outcome.page,
+                                    runs,
+                                },
+                            );
+                            prefetch_picker_neighbors(app, tx);
+                        }
+                    }
+                    Err(err) => {
+                        if app.loading && outcome.page == app.pending_page {
+                            app.error = Some(err);
+                            app.loading = false;
+                            app.pending_page = app.page;
+                        }
+                    }
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => break,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                if app.loading {
+                    app.error = Some("background fetch channel disconnected".to_string());
+                    app.loading = false;
+                    app.pending_page = app.page;
+                }
+                break;
+            }
+        }
+    }
+}
+
+fn queue_picker_fetch(app: &mut PickerApp, tx: &mpsc::Sender<PickerFetchOutcome>, page: usize) {
+    if app.page_cache.contains_key(&page) || app.in_flight_pages.contains(&page) {
+        return;
+    }
+
+    app.in_flight_pages.insert(page);
+    let tx = tx.clone();
+    let per_page = app.per_page;
+    thread::spawn(move || {
+        let outcome = PickerFetchOutcome {
+            page,
+            result: fetch_runs_page(per_page, page).map_err(|e| e.to_string()),
+        };
+        let _ = tx.send(outcome);
+    });
+}
+
+fn prefetch_picker_neighbors(app: &mut PickerApp, tx: &mpsc::Sender<PickerFetchOutcome>) {
+    if app.page > 1 {
+        queue_picker_fetch(app, tx, app.page - 1);
+    }
+    queue_picker_fetch(app, tx, app.page + 1);
+}
+
+fn cache_picker_page(app: &mut PickerApp, page: usize, runs: Vec<RunListItem>) {
+    app.page_cache.insert(page, runs);
+    touch_picker_page_cache(app, page);
+
+    while app.page_cache.len() > app.cache_capacity {
+        let evict = app
+            .page_cache_order
+            .iter()
+            .copied()
+            .find(|candidate| *candidate != app.page && *candidate != app.pending_page);
+        let Some(evict_page) = evict else {
+            break;
+        };
+        app.page_cache.remove(&evict_page);
+        if let Some(pos) = app
+            .page_cache_order
+            .iter()
+            .position(|page| *page == evict_page)
+        {
+            let _ = app.page_cache_order.remove(pos);
+        }
+    }
+}
+
+fn touch_picker_page_cache(app: &mut PickerApp, page: usize) {
+    if let Some(pos) = app
+        .page_cache_order
+        .iter()
+        .position(|cached| *cached == page)
+    {
+        let _ = app.page_cache_order.remove(pos);
+    }
+    app.page_cache_order.push_back(page);
+}
+
 fn handle_picker_key(
     terminal: &mut TerminalBackend,
     app: &mut PickerApp,
-    rx: &mut mpsc::Receiver<Result<PickerFetchResult, String>>,
+    tx: &mpsc::Sender<PickerFetchOutcome>,
     key: KeyCode,
 ) -> Result<bool> {
     match key {
@@ -180,18 +294,12 @@ fn handle_picker_key(
         }
         KeyCode::Right | KeyCode::Char(']') => {
             if !app.loading {
-                app.pending_page = app.page + 1;
-                app.loading = true;
-                app.error = None;
-                *rx = start_picker_fetch(app.pending_page, app.per_page);
+                request_picker_page(app, tx, app.page + 1);
             }
         }
         KeyCode::Left | KeyCode::Char('[') => {
             if !app.loading && app.page > 1 {
-                app.pending_page = app.page - 1;
-                app.loading = true;
-                app.error = None;
-                *rx = start_picker_fetch(app.pending_page, app.per_page);
+                request_picker_page(app, tx, app.page - 1);
             }
         }
         KeyCode::Enter => {
@@ -232,20 +340,6 @@ fn handle_picker_key(
     }
 
     Ok(false)
-}
-
-fn start_picker_fetch(
-    page: usize,
-    per_page: usize,
-) -> mpsc::Receiver<Result<PickerFetchResult, String>> {
-    let (tx, rx) = mpsc::channel::<Result<PickerFetchResult, String>>();
-    thread::spawn(move || {
-        let result = fetch_runs_page(per_page, page)
-            .map(|runs| PickerFetchResult { page, runs })
-            .map_err(|e| e.to_string());
-        let _ = tx.send(result);
-    });
-    rx
 }
 
 fn load_compare_app_with_spinner(
@@ -403,6 +497,7 @@ fn build_compare_app(args: CompareArgs) -> Result<App> {
 
     let dist_steps = merge_distribution_steps(&extras_left.dist_steps, &extras_right.dist_steps);
     let default_dist_index = dist_steps.len().saturating_sub(1);
+    let (dist_tx, dist_rx) = mpsc::channel::<DistributionFetchOutcome>();
 
     let mut app = App {
         reward_chart_left: to_chart_points(&left.points),
@@ -422,13 +517,32 @@ fn build_compare_app(args: CompareArgs) -> Result<App> {
         dist_steps,
         current_dist_index: default_dist_index,
         dist_loading: false,
+        dist_pending_step: None,
         dist_error: None,
-        dist_rx: None,
+        dist_rx,
+        dist_tx,
+        dist_cache: Default::default(),
+        dist_in_flight: Default::default(),
         dist_throbber: ThrobberState::default(),
     };
 
     resolve_initial_distribution_index(&mut app, args.dist_step);
+    if let Some(step) = current_distribution_step(&app) {
+        app.dist_cache.insert(
+            step,
+            DistributionFetchResult {
+                step,
+                left: extras_left.distributions.clone(),
+                right: extras_right.distributions.clone(),
+            },
+        );
+        prefetch_distribution_neighbors(&mut app);
+    }
     Ok(app)
+}
+
+fn current_distribution_step(app: &App) -> Option<i64> {
+    app.dist_steps.get(app.current_dist_index).copied()
 }
 
 fn selected_state() -> TableState {
@@ -634,17 +748,35 @@ fn shift_distribution_step(app: &mut App, delta: isize) {
 
     app.current_dist_index = next;
     if let Some(step) = app.dist_steps.get(next).copied() {
-        start_distribution_step_fetch(app, step);
+        request_distribution_step(app, step);
     }
 }
 
-fn start_distribution_step_fetch(app: &mut App, step: i64) {
+fn request_distribution_step(app: &mut App, step: i64) {
+    if let Some(payload) = app.dist_cache.get(&step).cloned() {
+        apply_distribution_payload(app, payload);
+        prefetch_distribution_neighbors(app);
+        return;
+    }
+
+    app.dist_loading = true;
+    app.dist_pending_step = Some(step);
+    app.dist_error = None;
+    queue_distribution_fetch(app, step);
+}
+
+fn queue_distribution_fetch(app: &mut App, step: i64) {
+    if app.dist_cache.contains_key(&step) || app.dist_in_flight.contains(&step) {
+        return;
+    }
+
     let (Some(left_id), Some(right_id)) = (app.left.run_id.clone(), app.right.run_id.clone())
     else {
         return;
     };
 
-    let (tx, rx) = mpsc::channel::<Result<DistributionFetchResult, String>>();
+    app.dist_in_flight.insert(step);
+    let tx = app.dist_tx.clone();
     thread::spawn(move || {
         let left_handle = thread::spawn(move || {
             fetch_prime_distributions(&left_id, Some(step))
@@ -668,48 +800,83 @@ fn start_distribution_step_fetch(app: &mut App, step: i64) {
 
         match (left, right) {
             (Ok(left), Ok(right)) => {
-                let _ = tx.send(Ok(DistributionFetchResult { step, left, right }));
+                let _ = tx.send(DistributionFetchOutcome {
+                    step,
+                    result: Ok(DistributionFetchResult { step, left, right }),
+                });
             }
             (Err(left), Err(right)) => {
-                let _ = tx.send(Err(format!("{left}; {right}")));
+                let _ = tx.send(DistributionFetchOutcome {
+                    step,
+                    result: Err(format!("{left}; {right}")),
+                });
             }
             (Err(err), _) | (_, Err(err)) => {
-                let _ = tx.send(Err(err));
+                let _ = tx.send(DistributionFetchOutcome {
+                    step,
+                    result: Err(err),
+                });
             }
         }
     });
+}
 
-    app.dist_loading = true;
+fn prefetch_distribution_neighbors(app: &mut App) {
+    if app.dist_steps.is_empty() {
+        return;
+    }
+
+    let current = app.current_dist_index;
+    if current > 0 {
+        let step = app.dist_steps[current - 1];
+        queue_distribution_fetch(app, step);
+    }
+    if let Some(step) = app.dist_steps.get(current + 1).copied() {
+        queue_distribution_fetch(app, step);
+    }
+}
+
+fn apply_distribution_payload(app: &mut App, payload: DistributionFetchResult) {
+    app.distribution_comparison = build_distribution_comparison(&payload.left, &payload.right);
+    app.dist_loading = false;
+    app.dist_pending_step = None;
     app.dist_error = None;
-    app.dist_rx = Some(rx);
+    if let Some(index) = app.dist_steps.iter().position(|step| *step == payload.step) {
+        app.current_dist_index = index;
+    }
 }
 
 fn poll_distribution_fetch(app: &mut App) {
-    let Some(rx) = app.dist_rx.as_ref() else {
-        return;
-    };
-
-    match rx.try_recv() {
-        Ok(Ok(payload)) => {
-            app.distribution_comparison =
-                build_distribution_comparison(&payload.left, &payload.right);
-            app.dist_loading = false;
-            app.dist_error = None;
-            app.dist_rx = None;
-            if let Some(index) = app.dist_steps.iter().position(|step| *step == payload.step) {
-                app.current_dist_index = index;
+    loop {
+        match app.dist_rx.try_recv() {
+            Ok(outcome) => {
+                app.dist_in_flight.remove(&outcome.step);
+                match outcome.result {
+                    Ok(payload) => {
+                        app.dist_cache.insert(outcome.step, payload.clone());
+                        if app.dist_pending_step == Some(outcome.step) {
+                            apply_distribution_payload(app, payload);
+                            prefetch_distribution_neighbors(app);
+                        }
+                    }
+                    Err(err) => {
+                        if app.dist_pending_step == Some(outcome.step) {
+                            app.dist_loading = false;
+                            app.dist_pending_step = None;
+                            app.dist_error = Some(err);
+                        }
+                    }
+                }
             }
-        }
-        Ok(Err(err)) => {
-            app.dist_loading = false;
-            app.dist_error = Some(err);
-            app.dist_rx = None;
-        }
-        Err(mpsc::TryRecvError::Empty) => {}
-        Err(mpsc::TryRecvError::Disconnected) => {
-            app.dist_loading = false;
-            app.dist_error = Some("distribution fetch channel disconnected".to_string());
-            app.dist_rx = None;
+            Err(mpsc::TryRecvError::Empty) => break,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                if app.dist_loading {
+                    app.dist_loading = false;
+                    app.dist_pending_step = None;
+                    app.dist_error = Some("distribution fetch channel disconnected".to_string());
+                }
+                break;
+            }
         }
     }
 }
